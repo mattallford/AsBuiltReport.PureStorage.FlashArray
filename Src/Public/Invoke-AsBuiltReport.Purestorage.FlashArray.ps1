@@ -40,31 +40,23 @@ function Invoke-AsBuiltReport.PureStorage.FlashArray {
 
         if ($Array) {
             $script:ArrayAttributes = Get-PfaArrayAttributes -Array $Array
-            $script:ArrayRemoteAssistSession = Get-PfaRemoteAssistSession -Array $array
-            $script:ArrayPhoneHomeStatus = Get-PfaPhoneHomeStatus -Array $array
-            $script:ArrayControllers = Get-PfaControllers -Array $Array
             $script:ArrayAlerts = Get-PfaAlerts -Array $Array
             $script:ArrayRelayHost = Get-PfaRelayHost -Array $Array
             $script:ArraySenderDomain = Get-PfaSenderDomain -Array $Array
             $script:ArraySNMPManagers = Get-PfaSnmpManagers -Array $Array
-            $script:ArraySSLCertificate = Get-PfaCurrentCertificateAttributes -Array $Array
             $script:ArraySyslogServers = Get-PfaSyslogServers -Array $Array
             $script:ArrayNTPServers = Get-PfaNtpServers -Array $Array
             $script:ArrayVolumes = Get-PfaVolumes -Array $Array
             $Script:ArrayHosts = Get-PfaHosts -Array $Array
             $script:ArrayHostGroups = Get-PfaHostGroups -Array $Array
             $script:ArrayProtectionGroups = Get-PfaProtectionGroups -Array $Array
-            $script:ArrayProtectionGroupSchedules = Get-PfaProtectionGroupSchedules -Array $Array
             $script:ArrayProtectionGroupSnapshots = Get-PfaProtectionGroupSnapshots -Array $Array -Name *
             $script:ConnectedArrays = Get-PfaArrayConnections -Array $array
-            $script:ArrayProxyServer = Get-PfaProxy -Array $Array
             $script:ArrayNetworkInterfaces = Get-PfaNetworkInterfaces -Array $Array
             $script:ArrayPorts = Get-PfaArrayPorts -Array $array
             $script:ArrayDNS = Get-PfaDnsAttributes -Array $Array
             $script:ArrayDirectoryService = Get-PfaDirectoryServiceConfiguration -Array $Array
             $script:ArrayDirectoryServiceGroups = Get-PfaDirectoryServiceGroups -Array $Array
-            $script:ArraySpaceMetrics = Get-PfaArraySpaceMetrics -Array $Array
-            $script:ArrayDisks = Get-PfaAllDriveAttributes -Array $Array
 
 
             Section -Style Heading1 $ArrayAttributes.array_name {
@@ -86,53 +78,24 @@ function Invoke-AsBuiltReport.PureStorage.FlashArray {
                     }
                     $ArraySummary | Table -Name 'Array Summary' -List
                 }#End Section Heading2 System Summary
+                
+                if ($ArraySpaceMetrics = Get-ABRPfaArraySpaceMetrics -Array $Array) {
+                    Section -Style Heading2 'Storage Summary' {
+                        $ArraySpaceMetrics
+                    }#End Section Heading2 Storage Summary
+                }
 
-                Section -Style Heading2 'Storage Summary' {
-                    Paragraph "The following section provides a summary of the storage usage on $($ArrayAttributes.array_name)."
-                    BlankLine
-                    $ArraySpaceSummary = [PSCustomObject] @{
-                        'Capacity' = "$([math]::Round(($ArraySpaceMetrics.capacity) / 1TB, 2)) TB"
-                        'Used' = "$([math]::Round(($ArraySpaceMetrics.total) / 1TB, 2)) TB"
-                        'Free' = "$([math]::Round(($ArraySpaceMetrics.capacity - $ArraySpaceMetrics.total) / 1TB, 2)) TB"
-                        '% Used' = [math]::Truncate(($ArraySpaceMetrics.total / $ArraySpaceMetrics.capacity) * 100)
-                        'Volumes' = "$([math]::Round(($ArraySpaceMetrics.volumes) / 1GB, 2)) GB"
-                        'Snapshots' = "$([math]::Round(($ArraySpaceMetrics.snapshots) / 1GB, 2)) GB"
-                        'Shared Space' = "$([math]::Round(($ArraySpaceMetrics.shared_space) / 1GB, 2)) GB"
-                        'System' = "$([math]::Round(($ArraySpaceMetrics.system) / 1GB, 2)) GB"
-                        'Data Reduction' = [math]::Round(($ArraySpaceMetrics.data_reduction), 2)
-                        'Total Reduction' = [math]::Round(($ArraySpaceMetrics.total_reduction), 2)
-                    }
-                    $ArraySpaceSummary | Table -Name 'Storage Summary' -List -ColumnWidths 50, 50
-                }#End Section Heading2 Storage Summary
+                if ($ArrayControllers = Get-ABRPfaControllers -Array $Array) {
+                    Section -Style Heading2 'Controller Summary' {
+                        $ArrayControllers
+                    }#End section Heading2 'Controller Summary'
+                }
 
-                Section -Style Heading2 'Controller Summary' {
-                    Paragraph "The following section provides a summary of the controllers in $($ArrayAttributes.array_name)."
-                    BlankLine
-                    $ArrayControllerSummary = foreach ($ArrayController in $ArrayControllers) {
-                        [PSCustomObject] @{
-                            'Name' = $ArrayController.name
-                            'Mode' = $ArrayController.mode
-                            'Model' = $ArrayController.model
-                            'Purity Version' = $ArrayController.version
-                            'Status' = $ArrayController.status
-                        }
-                    }
-                    $ArrayControllerSummary | Sort-Object -Property Name | Table -Name 'Controller Summary'
-                }#End section Heading2 'Controller Summary'
-
-                Section -Style Heading2 'Disk Summary' {
-                    Paragraph "The following section provides a summary of the disks in $($ArrayAttributes.array_name)."
-                    BlankLine
-                    $ArrayDiskSummary = foreach ($ArrayDisk in $ArrayDisks) {
-                        [PSCustomObject] @{
-                            'Name' = $ArrayDisk.name
-                            'Capacity GB' = [math]::Round(($ArrayDisk.capacity) / 1GB, 0)
-                            'Type' = $ArrayDisk.Type
-                            'Status' = $ArrayDisk.status
-                        }
-                    }
-                    $ArrayDiskSummary | Sort-Object -Property Name | Table -Name 'Disk Summary' -ColumnWidths 25, 25, 25, 25
-                }#End section Heading2 'Disk Summary'
+                if ($ArrayDriveAttributes = Get-ABRPfaAllDriveAttributes -Array $Array) {
+                    Section -Style Heading2 'Disk Summary' {
+                        $ArrayDriveAttributes
+                    }#End section Heading2 'Disk Summary'
+                }
 
                 Section -Style Heading2 'Storage Configuration' {
                     Paragraph "The following section provides a summary of the Storage Configuration on $($ArrayAttributes.array_name)."
@@ -240,23 +203,9 @@ function Invoke-AsBuiltReport.PureStorage.FlashArray {
                         }#End Section Heading3 'Protection groups'
                     }#End if ($ArrayProtectionGroups)
 
-                    if ($ArrayProtectionGroupSchedules) {
+                    if ($ArrayProtectionGroupSchedules = Get-ABRPfaProtectionGroupSchedules -Array $Array) {
                         Section -Style Heading3 'Protection Group Schedules' {
-                            Paragraph "The following section provides information on the protection group snapshot and replication schedules on $($ArrayAttributes.array_name)."
-                            BlankLine
-                            $ArrayProtectionGroupScheduleConfiguration = foreach ($ArrayProtectionGroupSchedule in $ArrayProtectionGroupSchedules) {
-                                [PSCustomObject] @{
-                                    'Name' = $ArrayProtectionGroupSchedule.name
-                                    'Snapshot Enabled' = $ArrayProtectionGroupSchedule.snap_enabled
-                                    'Snapshot Frequency (Mins)' = ($ArrayProtectionGroupSchedule.snap_frequency / 60)
-                                    'Snapshot At' = $ArrayProtectionGroupSchedule.snap_at
-                                    'Replication Enabled' = $ArrayProtectionGroupSchedule.replicate_enabled
-                                    'Replication Frequency (Mins)' = ($ArrayProtectionGroupSchedule.replicate_frequency / 60)
-                                    'Replicate At' = $ArrayProtectionGroupSchedule.replicate_at
-                                    'Replication Blackout Times' = $ArrayProtectionGroupSchedule.replicate_blackout
-                                }
-                            }
-                            $ArrayProtectionGroupScheduleConfiguration | Sort-Object -Property Name | Table -Name 'Protection Group Schedule'
+                            $ArrayProtectionGroupSchedules
                         }#End Section Heading3 'Protection Group Schedules'
                     }#End if (ArrayProtectionGroupSchedules)
                 }#End Section Heading2 Storage Configuration
@@ -316,34 +265,11 @@ function Invoke-AsBuiltReport.PureStorage.FlashArray {
                     }
 
                     Section -Style Heading3 'Pure1 Support' {
-                        Paragraph "The following section provides information on the Pure1 Support configuration for $($ArrayAttributes.array_name)."
-                        Blankline
-                        $ArrayPure1Configuration = [PSCustomObject] @{
-                            'Phone Home Status' = $ArrayPhoneHomeStatus.phonehome
-                            'Remote Assist Status' = $ArrayRemoteAssistSession.status
-                            'Proxy Server' = $ArrayProxyServer.proxy
-                        }
-                        $ArrayPure1Configuration | Table -Name 'Pure1 Configuration' -List -ColumnWidths 50, 50 
+                        Get-ABRPfaPure1Configuration -Array $Array
                     }#End Section Heading3 Pure1 Configuration
 
                     Section -Style Heading3 'SSL Certificate' {
-                        Paragraph "The following section provides information on the SSL certificate for $($ArrayAttributes.array_name)."
-                        Blankline
-                        $ArraySSLCertConfiguration = [PSCustomObject] @{
-                            'Status' = $ArraySSLCertificate.status
-                            'Issued To' = $ArraySSLCertificate.issued_to
-                            'Issued By' = $ArraySSLCertificate.issued_by
-                            'Valid from' = $ArraySSLCertificate.valid_from
-                            'Valid To' = $ArraySSLCertificate.valid_to
-                            'Locality' = $ArraySSLCertificate.locality
-                            'Country' = $ArraySSLCertificate.country
-                            'State' = $ArraySSLCertificate.state
-                            'Key Size' = $ArraySSLCertificate.key_size
-                            'Organisational Unit' = $ArraySSLCertificate.organizational_unit
-                            'Organisation' = $ArraySSLCertificate.organization
-                            'Email' = $ArraySSLCertificate.email
-                        }
-                        $ArraySSLCertConfiguration | Table -Name 'SSL Certificate' -List
+                        Get-ABRPfaCurrentCertificateAttributes -Array $Array
                     }#End Section Heading3 SSL Certificate
                 }#End Section Heading2 System Configuration
 
