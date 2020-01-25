@@ -19,9 +19,14 @@ function Invoke-AsBuiltReport.PureStorage.FlashArray {
     #region Script Parameters
     [CmdletBinding()]
     param (
+        [Parameter(Mandatory=$true)]
         [string[]] $Target,
+
+        [Parameter(Mandatory=$true)]
         [pscredential] $Credential,
-		$StylePath
+
+        [Parameter(Mandatory=$false)]
+        [string] $StylePath
     )
 
     # If custom style not set, use default style
@@ -29,343 +34,77 @@ function Invoke-AsBuiltReport.PureStorage.FlashArray {
         & "$PSScriptRoot\..\..\AsBuiltReport.Purestorage.FlashArray.Style.ps1"
     }
 
-    $Script:Array = $Null
-    #Connect to Pure Storage Array using supplied credentials
+    $FlashArray = $Null
+    
     foreach ($FlashArray in $Target) {
+        #Connect to Pure Storage Array using supplied credentials via the API
         Try {
-            $Array = New-PfaArray -EndPoint $FlashArray -Credentials $Credential -IgnoreCertificateError -ErrorAction Stop
+            # Allow the connection to complete if the endpoint has an untrusted certificate
+        add-type @"
+        using System.Net;
+        using System.Security.Cryptography.X509Certificates;
+        public class TrustAllCertsPolicy : ICertificatePolicy {
+            public bool CheckValidationResult(
+                ServicePoint srvPoint, X509Certificate certificate,
+                WebRequest request, int certificateProblem) {
+                return true;
+            }
+        }
+"@
+        
+        # Ensure TLS12 is added to the Security Protocol
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+        # Allow connections to endpoints with untrusted certificates
+        [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+
+        # Build a variable for the BaseUri to use through the rest of the tool
+        $BaseUri = "https://$FlashArray/api/1.15"
+
+        # Build the Body to use in the API Token Method Post
+        $PureAuthAction = @{
+            'username' = $($Credential.UserName);
+            'password' = "$($Credential.GetNetworkCredential().Password)"
+        }
+
+        # Retrieve the API token from the FlashArray endpoint using the credentials supplied
+        $ApiToken = Invoke-RestMethod -Method Post -Uri "$BaseUri/auth/apitoken" -Body $PureAuthAction
+
+        # Build a session action to be used in the next Post to create a session
+        $SessionAction = @{
+            api_token = $ApiToken.api_token
+        }
+
+        # Create a web session to be reused throughout the rest of the script when calling the FlashArray API
+        Invoke-RestMethod -Method Post -Uri "$BaseUri/auth/session" -Body $SessionAction -SessionVariable Session
         } Catch {
             Write-Error $_
         }
 
-        if ($Array) {
-            $script:ArrayAttributes = Get-PfaArrayAttributes -Array $Array
-            $script:ArrayAlerts = Get-PfaAlerts -Array $Array
-            $script:ArrayRelayHost = Get-PfaRelayHost -Array $Array
-            $script:ArraySenderDomain = Get-PfaSenderDomain -Array $Array
-            $script:ArraySNMPManagers = Get-PfaSnmpManagers -Array $Array
-            $script:ArraySyslogServers = Get-PfaSyslogServers -Array $Array
-            $script:ArrayNTPServers = Get-PfaNtpServers -Array $Array
-            $script:ArrayVolumes = Get-PfaVolumes -Array $Array
-            $Script:ArrayHosts = Get-PfaHosts -Array $Array
-            $script:ArrayHostGroups = Get-PfaHostGroups -Array $Array
-            $script:ArrayProtectionGroups = Get-PfaProtectionGroups -Array $Array
-            $script:ArrayProtectionGroupSnapshots = Get-PfaProtectionGroupSnapshots -Array $Array -Name *
-            $script:ConnectedArrays = Get-PfaArrayConnections -Array $array
-            $script:ArrayNetworkInterfaces = Get-PfaNetworkInterfaces -Array $Array
-            $script:ArrayPorts = Get-PfaArrayPorts -Array $array
-            $script:ArrayDNS = Get-PfaDnsAttributes -Array $Array
-            $script:ArrayDirectoryService = Get-PfaDirectoryServiceConfiguration -Array $Array
-            $script:ArrayDirectoryServiceGroups = Get-PfaDirectoryServiceGroups -Array $Array
+        # If creating the session was successful, query the API to pull the configuration information
+        if ($Session) {
 
-
-            Section -Style Heading1 $ArrayAttributes.array_name {
-                Section -Style Heading2 'System Summary' {
-                    Paragraph "The following section provides a summary of the array configuration for $($ArrayAttributes.array_name)."
-                    BlankLine
-                    #Provide a summary of the Array
-                    $ArraySummary = [PSCustomObject] @{
-                        'Array Name' = $ArrayAttributes.array_name
-                        'Purity Version' = $ArrayAttributes.version
-                        'Array ID' = $ArrayAttributes.id
-                        'Number of Volumes' = $ArrayVolumes.count
-                        'Number of Protection Groups' = $ArrayProtectionGroups.count
-                        'Number of Protection Group Snapshots' = $ArrayProtectionGroupSnapshots.count
-                        'Number of Hosts' = $ArrayHosts.count
-                        'Number of Host Groups' = $ArrayHostGroups.count
-                        #'Pod #' = 
-                        'Number of Connected Arrays' = $ConnectedArrays.count
+            Section -Style Heading1 $FlashArray {
+                if ($ArrayInfo = Get-AbrPureStorageArray -BaseUri $BaseUri -apiSession $Session) {
+                    Section -Style Heading2 'Array Summary' {
+                        $ArrayInfo
                     }
-                    $ArraySummary | Table -Name 'Array Summary' -List
-                }#End Section Heading2 System Summary
-                
-                if ($ArraySpaceMetrics = Get-ABRPfaArraySpaceMetrics -Array $Array) {
-                    Section -Style Heading2 'Storage Summary' {
-                        $ArraySpaceMetrics
-                    }#End Section Heading2 Storage Summary
                 }
 
-                if ($ArrayControllers = Get-ABRPfaControllers -Array $Array) {
+                if ($ControllerInfo = Get-AbrPureStorageArrayController -BaseUri $BaseUri -apiSession $Session) {
                     Section -Style Heading2 'Controller Summary' {
-                        $ArrayControllers
-                    }#End section Heading2 'Controller Summary'
+                        $ControllerInfo
+                    }
                 }
+            }
 
-                if ($ArrayDriveAttributes = Get-ABRPfaAllDriveAttributes -Array $Array) {
-                    Section -Style Heading2 'Disk Summary' {
-                        $ArrayDriveAttributes
-                    }#End section Heading2 'Disk Summary'
-                }
-
-                Section -Style Heading2 'Storage Configuration' {
-                    Paragraph "The following section provides a summary of the Storage Configuration on $($ArrayAttributes.array_name)."
-                    BlankLine
-                    if ($ConnectedArrays) {
-                        Section -Style Heading3 'Connected Arrays' {
-                            Paragraph 'The following section provides information on connected arrays.'
-                            BlankLine
-                            $ConnectedArrayConfiguration = foreach ($ConnectedArray in $ConnectedArrays) {
-                                [PSCustomObject] @{
-                                    'Name' = $ConnectedArray.array_name
-                                    'ID' = $ConnectedArray.id
-                                    'Connected' = $ConnectedArray.connected
-                                    'Type' = ($ConnectedArray.type -join ", ")
-                                    'Version' = $ConnectedArray.version
-                                    'Management Address' = $ConnectedArray.management_address
-                                    'Replication Address' = $ConnectedArray.replication_address
-                                    'Throttled' = $ConnectedArray.throttled
-                                }
-                            }
-                            $ConnectedArrayConfiguration | Table 'Connected Arrays' -List
-                        }#End Section Heading3 Connected Arrays
-                    }#End if ($ConnectedArrays)
-
-                    if ($ArrayHosts) {
-                        Section -Style Heading3 'Hosts' {
-                            Paragraph "The following section provides information on the hosts defined on $($ArrayAttributes.array_name)."
-                            BlankLine
-                            if ($ArrayHosts.iqn) {
-                                $ArrayHostConfigration = foreach ($ArrayHost in $ArrayHosts) {
-                                    [PSCustomObject] @{
-                                        'Host Name' = $ArrayHost.Name
-                                        'Host Group' = $ArrayHost.hgroup
-                                        'IQN' = $ArrayHost.iqn
-                                    }
-                                }
-                                $ArrayHostConfigration | Sort-Object -Property 'Host Name', 'Host Group' | Table -Name 'Hosts'
-                            } elseif ($ArrayHosts.wwn) {
-                                $ArrayHostConfigration = foreach ($ArrayHost in $ArrayHosts) {
-                                    [PSCustomObject] @{
-                                        'Host Name' = $ArrayHost.Name
-                                        'Host Group' = $ArrayHost.hgroup
-                                        'WWN' = ($ArrayHost.wwn -split "(\w{2})" | Where-Object {$_ -ne ""}) -join ":"
-                                    }
-                                }
-                                $ArrayHostConfigration | Sort-Object -Property 'Host Name', 'Host Group' | Table -Name 'Hosts'
-                            } else {
-                                $ArrayHostConfigration = foreach ($ArrayHost in $ArrayHosts) {
-                                    [PSCustomObject] @{
-                                        'Host Name' = $ArrayHost.Name
-                                        'Host Group' = $ArrayHost.hgroup
-                                    }
-                                }
-                                $ArrayHostConfigration | Sort-Object -Property 'Host Name', 'Host Group' | Table -Name 'Hosts'
-                            }
-                        }#End Section Heading3 Hosts
-                    }#End if ($ArrayHosts)
-
-                    if ($ArrayHostGroups) {
-                        Section -Style Heading3 'Host Groups' {
-                            Paragraph "The following section provides information on the host groups on $($ArrayAttributes.array_name)."
-                            BlankLine
-                            $ArrayHostGroupConfiguration = foreach ($ArrayHostGroup in $ArrayHostGroups) {
-                                [PSCustomObject] @{
-                                    'Host Group Name' = $ArrayHostGroup.name
-                                    'Hosts' = ($ArrayHostGroup.hosts -join ", ")
-                                }
-                            }
-                            $ArrayHostGroupConfiguration | Sort-Object -Property 'Host Group Name' | Table -Name "Host Groups" -ColumnWidths 50, 50
-                        }#End Section Heading3 Host Groups
-                    }#End if ($ArrayHostGroups)
-
-                    if ($ArrayVolumes) {
-                        Section -Style Heading3 'Volumes' {
-                            Paragraph "The following section provides information on the volumes on $($ArrayAttributes.array_name)."
-                            Blankline
-                            $ArrayVolumeConfiguration = foreach ($ArrayVolume in $ArrayVolumes) {
-                                $ArrayVolumeHostGroupConnection = Get-PfaVolumeHostGroupConnections -Array $array -VolumeName $ArrayVolume.name
-                                [PSCustomObject] @{
-                                    'Volume Name' = $ArrayVolume.name
-                                    'Volume Size' = "$(($ArrayVolume.Size / 1GB)) GB"
-                                    'Volume Serial' = $ArrayVolume.Serial
-                                    'Host Group' = ($ArrayVolumeHostGroupConnection.hgroup | Select-Object -Unique)
-                                }
-                            }
-                            $ArrayVolumeConfiguration | Sort-Object -Property 'Volume Name' | Sort-Object "Volume Name" | Table -Name 'Volumes'
-                        }#End Section Heading3 Volumes
-                    }#End if ($ArrayVolumes)
-
-                    if ($ArrayProtectionGroups) {
-                        Section -Style Heading3 'Protection Groups' {
-                            Paragraph "The following section provides information on the protection groups on $($ArrayAttributes.array_name)."
-                            BlankLine
-                            $ArrayProtectionGroupConfiguration = foreach ($ArrayProtectionGroup in $ArrayProtectionGroups) {
-                                [PSCustomObject] @{
-                                    'Name' = $ArrayProtectionGroup.Name
-                                    'Host Group(s)' = $ArrayProtectionGroup.hgroups
-                                    'Source' = $ArrayProtectionGroup.source
-                                    'Targets' = ($ArrayProtectionGroup.targets).name
-                                    'Replication Allowed' = ($ArrayProtectionGroup.targets).allowed
-                                    'Volumes' = ($ArrayProtectionGroup.volumes -join ", ")
-                                }
-                            }
-                            $ArrayProtectionGroupConfiguration | Sort-Object -Property Name | Table -Name 'Protection Groups'
-                        }#End Section Heading3 'Protection groups'
-                    }#End if ($ArrayProtectionGroups)
-
-                    if ($ArrayProtectionGroupSchedules = Get-ABRPfaProtectionGroupSchedules -Array $Array) {
-                        Section -Style Heading3 'Protection Group Schedules' {
-                            $ArrayProtectionGroupSchedules
-                        }#End Section Heading3 'Protection Group Schedules'
-                    }#End if (ArrayProtectionGroupSchedules)
-                }#End Section Heading2 Storage Configuration
-
-                Section -Style Heading2 'System Configuration' {
-                    Paragraph "The following section provides information on the system configuration for $($ArrayAttributes.array_name)."
-                    if ($ArrayRelayHost -or $ArraySenderDomain -or $ArrayAlerts) {    
-                        Section -Style Heading3 'SMTP Configuration' {
-                            Paragraph "The following section provides information on the SMTP configuration for $($ArrayAttributes.array_name)."
-                            Blankline
-                            $ArraySMTPConfiguration = [PSCustomObject] @{
-                                'SMTP Server' = $ArrayRelayHost.relayhost
-                                'SMTP Sender Domain' = $ArraySenderDomain.senderdomain
-                                'SMTP Recipients' = ($ArrayAlerts.name -join ", ")
-                            }
-                            $ArraySMTPConfiguration | Table -Name 'SMTP Configuration' -List -ColumnWidths 50, 50 
-                        }#End Section Heading3 SMTP Configuration
-                    }
-
-                    Section -Style Heading3 'SNMP Configuration' {
-                        Paragraph "The following section provides information on the SNMP configuration for $($ArrayAttributes.array_name)."
-                        Blankline
-                        $ArraySNMPConfiguration = [PSCustomObject] @{
-                            'Name' = $ArraySNMPManagers.name
-                            'Community' = $ArraySNMPManagers.community
-                            'Privacy Protocol' = $ArraySNMPManagers.privacy_protocol
-                            'Authentication Protocol' = $ArraySNMPManagers.auth_protocol
-                            'Host' = $ArraySNMPManagers.host
-                            'Version' = $ArraySNMPManagers.version
-                            'User' = $ArraySNMPManagers.user
-                            'Privacy Passphrase' = $ArraySNMPManagers.privacy_passphrase
-                            'Authentication Passphrase' = $ArraySNMPManagers.auth_passphrase
-                        }
-                        $ArraySNMPConfiguration | Table -Name 'SNMP Configuration' -List -ColumnWidths 50, 50 
-                    }#End Section Heading3 SNMP Configuration
-
-                    if ($ArraySyslogServers) {
-                        Section -Style Heading3 'Syslog Configuration' {
-                            Paragraph "The following section provides information on the Syslog configuration for $($ArrayAttributes.array_name)."
-                            Blankline
-                            $ArraySyslogConfiguration = [PSCustomObject] @{
-                                'Syslog Servers' = ($ArraySyslogServers.syslogserver -join ", ")
-                            }
-                            $ArraySyslogConfiguration | Table -Name 'Syslog Configuration' -List -ColumnWidths 50, 50 
-                        }#End Section Heading3 Syslog Configuration
-                    }
-
-                    if ($ArrayNTPServers) {
-                        Section -Style Heading3 'NTP Configuration' {
-                            Paragraph "The following section provides information on the NTP configuration for $($ArrayAttributes.array_name)."
-                            Blankline
-                            $ArrayNTPConfiguration = [PSCustomObject] @{
-                                'NTP Servers' = ($ArrayNTPServers.ntpserver -join ", ")
-                            }
-                            $ArrayNTPConfiguration | Table -Name 'NTP Configuration' -List -ColumnWidths 50, 50 
-                        }#End Section Heading3 NTP Configuration
-                    }
-
-                    Section -Style Heading3 'Pure1 Support' {
-                        Get-ABRPfaPure1Configuration -Array $Array
-                    }#End Section Heading3 Pure1 Configuration
-
-                    Section -Style Heading3 'SSL Certificate' {
-                        Get-ABRPfaCurrentCertificateAttributes -Array $Array
-                    }#End Section Heading3 SSL Certificate
-                }#End Section Heading2 System Configuration
-
-                Section -Style Heading2 'Network Configuration' {
-                    Paragraph "The following section provides information on the Network configuration for $($ArrayAttributes.array_name)."
-                    Section -Style Heading3 'Subnets and Interfaces' {
-                        Paragraph "The following section provides information on the subnets and interfaces for $($ArrayAttributes.array_name)."
-                        Blankline
-                        $ArrayNetworkConfiguration = foreach ($ArrayNetworkInterface in $ArrayNetworkInterfaces) {
-                            [PSCustomObject] @{
-                                'Name' = $ArrayNetworkInterface.name
-                                'Enabled' = $ArrayNetworkInterface.enabled
-                                'Subnet' = $ArrayNetworkInterface.subnet
-                                'MTU' = $ArrayNetworkInterface.mtu
-                                'Services' = ($ArrayNetworkInterface.services -join ", ")
-                                'Slaves' = ($ArrayNetworkInterface.slaves -join ", ")
-                                'IP Address' = $ArrayNetworkInterface.address
-                                'Netmask' = $ArrayNetworkInterface.netmask
-                                'Gateway Address' = $ArrayNetworkInterface.gateway
-                                'Hardware Address' = $ArrayNetworkInterface.hwaddr
-                                #'Speed GB' = Convert-Size -ConvertFrom Bytes -ConvertTo GB -value $ArrayNetworkInterfaces.speed -Precision 2
-                            }
-                        }
-                        $ArrayNetworkConfiguration | Sort-Object -Property Name | Table -Name 'Subnets and Interfaces'
-                    }#End Section Heading3 Subnets and Interfaces
-
-                    if ($ArrayPorts.wwn) {
-                        Section -Style Heading3 'WWN Target Ports' {
-                            Paragraph "The following section provides information on the WWN ports for $($ArrayAttributes.array_name)."
-                            Blankline    
-                            $ArrayPortWWNConfiguration = foreach ($ArrayPort in $ArrayPorts) { 
-                                [PSCustomObject] @{
-                                    'Port' = $ArrayPort.Name
-                                    'WWN' = ($ArrayPort.wwn -split "(\w{2})" | Where-Object {$_ -ne ""}) -join ":"
-                                }
-                            }
-                            $ArrayPortWWNConfiguration | Sort-Object -Property Port | Table -Name 'WWN Target Ports'
-                        }#End Section Heading3 WWN Target Ports
-                    } Elseif ($Arrayports.iqn) {
-                        Section -Style Heading3 'IQN Target Ports' {
-                            Paragraph "The following section provides information on the IQN ports for $($ArrayAttributes.array_name)."
-                            Blankline    
-                            $ArrayPortIQNConfiguration = foreach ($ArrayPort in $ArrayPorts) {
-                                [PSCustomObject] @{
-                                    'Port' = $ArrayPort.Name
-                                    'IQN' = $ArrayPort.iqn
-                                }
-                            }
-                            $ArrayPortIQNConfiguration | Sort-Object -Property Port | Table -Name 'IQN Target Ports'
-                        }#End Section Heading3 IQN Target Ports
-                    }#End if $Arrayports
-
-                    if ($ArrayDNS) {
-                        Section -Style Heading3 'DNS' {
-                            Paragraph "The following section provides information on the DNS configuration for $($ArrayAttributes.array_name)."
-                            Blankline
-                            $ArrayDNSConfiguration = [PSCustomObject] @{
-                                'Domain Name' = $ArrayDNS.domain
-                                'DNS Servers' = ($ArrayDNS.nameservers -join ", ")
-                            }
-                            $ArrayDNSConfiguration | Table -Name 'DNS'
-                        }#End Section Heading3 DNS
-                    }#End if $ArrayDNS
-
-                }#End Section Heading2 Network Configuration
-
-                Section -Style Heading2 'Users' {
-                    Paragraph "The following section provides information on the Users configuration for $($ArrayAttributes.array_name)."
-                    if ($ArrayDirectoryService) { 
-                        Section -Style Heading3 'Directory Service Configuration' {
-                            $ArrayDirectoryServiceConfiguration = [PSCustomObject] @{
-                                'Enabled' = $ArrayDirectoryService.Enabled
-                                'URI' = ($ArrayDirectoryService.URI -join ", ")
-                                'Base DN' = $ArrayDirectoryService.base_dn
-                                'Bind User' = $ArrayDirectoryService.Bind_user
-                                'Check Peer' = $ArrayDirectoryService.Check_peer
-                            }
-                            $ArrayDirectoryServiceConfiguration | Table -Name 'Directory Service Configuration' -List
-                        }#End Section Directory Service Configuration
-                    }#End If ($ArrayDirectoryService)
-
-                    if ($ArrayDirectoryServiceGroups) {
-                        Section -Style Heading3 'Directory Service Groups' {
-                            $ArrayDirectoryServiceGroupConfiguration = [PSCustomObject] @{
-                                'Group Base' = $ArrayDirectoryServiceGroups.group_base
-                                'Array Admin Group' = $ArrayDirectoryServiceGroups.array_admin_group
-                                'Storage Admin Group' = $ArrayDirectoryServiceGroups.storage_admin_group
-                                'Read Only Group' = $ArrayDirectoryServiceGroups.readonly_group
-                            }
-                            $ArrayDirectoryServiceGroupConfiguration | Table -Name 'Directory Service Groups' -List
-                        }
-                    }#End if ($ArrayDirectoryServiceGroups)
-                }#End Section Heading2 Users
-            }#End Section Heading1 $ArrayAttributes.array_name
         }#End if $Array
+
         #Clear the $Array variable ready for reuse for a connection attempt on the next foreach loop
-        Clear-Variable -Name Array
+        Clear-Variable -Name FlashArray
+        #Delete the REST session
+        #Invoke-RestMethod -Method Delete -Uri "$BaseUri/auth/session"
+
     }#End foreach $FlashArray in $Target
+
 }#End Function Invoke-AsBuiltReport.PureStorage.FlashArray
